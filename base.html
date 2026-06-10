@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}计算机网络知识体系交互式展示系统{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <a href="/" class="navbar-brand">Network Lab</a>
+        <ul class="navbar-nav">
+            <li><a href="/" {% if request.path == '/' %}class="active"{% endif %}>首页</a></li>
+            <li><a href="/dns" {% if request.path == '/dns' %}class="active"{% endif %}>DNS 演示</a></li>
+            <li><a href="/tcp" {% if request.path == '/tcp' %}class="active"{% endif %}>TCP 演示</a></li>
+            <li><a href="/scenario" {% if request.path == '/scenario' %}class="active"{% endif %}>综合场景</a></li>
+            <li><a href="/knowledge" {% if request.path == '/knowledge' %}class="active"{% endif %}>知识体系</a></li>
+        </ul>
+    </nav>
+
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+
+    <footer class="footer">
+        <p>&copy; 2026 计算机网络知识体系交互式展示系统. All rights reserved.</p>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

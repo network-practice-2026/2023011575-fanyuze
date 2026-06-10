@@ -1,0 +1,356 @@
+{% extends "base.html" %}
+{% block title %}TCP三次握手四次挥手 - 计算机网络{% endblock %}
+
+{% block content %}
+<h1 class="page-title">TCP 三次握手与四次挥手可视化</h1>
+<p class="page-subtitle">动态展示 TCP 连接建立（三次握手）和连接释放（四次挥手）的完整过程</p>
+
+<div class="card">
+    <div class="btn-group">
+        <button class="btn btn-primary" id="btnConnect">建立连接 (三次握手)</button>
+        <button class="btn btn-warning" id="btnRelease">释放连接 (四次挥手)</button>
+        <button class="btn btn-primary" id="btnNext" disabled>下一步</button>
+        <button class="btn btn-secondary" id="btnReset">重置</button>
+    </div>
+</div>
+
+<div class="canvas-container">
+    <canvas id="tcpCanvas" width="800" height="500"></canvas>
+</div>
+
+<div class="card">
+    <div class="info-panel" id="stepInfo" style="max-height:100px;">
+        <h3>当前步骤</h3>
+        <p id="stepDescription">点击"建立连接"开始三次握手，或点击"释放连接"开始四次挥手</p>
+    </div>
+</div>
+
+<div class="card">
+    <h3 class="card-title">连接状态变化</h3>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr><th></th><th>客户端</th><th>服务器</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><strong>当前状态</strong></td><td id="clientState">CLOSED</td><td id="serverState">CLOSED</td></tr>
+                <tr><td><strong>序列号 seq</strong></td><td id="clientSeq">-</td><td id="serverSeq">-</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const canvas = document.getElementById('tcpCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const clientPos = { x: 180, y: 280 };
+    const serverPos = { x: 600, y: 280 };
+
+    let clientState = 'CLOSED';
+    let serverState = 'CLOSED';
+    let clientSeq = 1000;
+    let serverSeq = 2000;
+
+    let animationId = null;
+    let currentStep = -1;
+    let stepProgress = 0;
+    let mode = ''; // 'connect' or 'release'
+
+    // Three-way handshake steps
+    const connectSteps = [
+        {
+            desc: '第一次握手：客户端发送 SYN=1, seq=x',
+            arrows: [{ f: 'client', t: 'server', label: 'SYN=1, seq=' + clientSeq, color: '#4fc3f7' }],
+            clientState: 'SYN-SENT', serverState: 'LISTEN'
+        },
+        {
+            desc: '第二次握手：服务器回复 SYN=1, ACK=1, seq=y, ack=x+1',
+            arrows: [{ f: 'server', t: 'client', label: 'SYN=1, ACK=1, seq=' + serverSeq + ', ack=' + (clientSeq + 1), color: '#66bb6a' }],
+            clientState: 'SYN-SENT', serverState: 'SYN-RCVD'
+        },
+        {
+            desc: '第三次握手：客户端发送 ACK=1, seq=x+1, ack=y+1',
+            arrows: [{ f: 'client', t: 'server', label: 'ACK=1, seq=' + (clientSeq + 1) + ', ack=' + (serverSeq + 1), color: '#4fc3f7' }],
+            clientState: 'ESTABLISHED', serverState: 'ESTABLISHED'
+        }
+    ];
+
+    // Four-way wave steps
+    const releaseSteps = [
+        {
+            desc: '第一次挥手：客户端发送 FIN=1, seq=u',
+            arrows: [{ f: 'client', t: 'server', label: 'FIN=1, seq=' + clientSeq, color: '#ef5350' }],
+            clientState: 'FIN-WAIT-1', serverState: 'ESTABLISHED'
+        },
+        {
+            desc: '第二次挥手：服务器回复 ACK=1, seq=v, ack=u+1',
+            arrows: [{ f: 'server', t: 'client', label: 'ACK=1, seq=' + serverSeq + ', ack=' + (clientSeq + 1), color: '#66bb6a' }],
+            clientState: 'FIN-WAIT-2', serverState: 'CLOSE-WAIT'
+        },
+        {
+            desc: '第三次挥手：服务器发送 FIN=1, ACK=1, seq=w, ack=u+1',
+            arrows: [{ f: 'server', t: 'client', label: 'FIN=1, ACK=1, seq=' + (serverSeq + 1) + ', ack=' + (clientSeq + 1), color: '#ef5350' }],
+            clientState: 'FIN-WAIT-2', serverState: 'LAST-ACK'
+        },
+        {
+            desc: '第四次挥手：客户端发送 ACK=1, seq=u+1, ack=w+1',
+            arrows: [{ f: 'client', t: 'server', label: 'ACK=1, seq=' + (clientSeq + 1) + ', ack=' + (serverSeq + 2), color: '#4fc3f7' }],
+            clientState: 'TIME-WAIT', serverState: 'CLOSED'
+        },
+        {
+            desc: '客户端等待 2MSL 后进入 CLOSED 状态',
+            arrows: [],
+            clientState: 'CLOSED', serverState: 'CLOSED'
+        }
+    ];
+
+    function getSteps() {
+        return mode === 'connect' ? connectSteps : releaseSteps;
+    }
+
+    function drawNode(pos, label, state, color, isHighlight) {
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, 30, 0, Math.PI * 2);
+        ctx.fillStyle = isHighlight ? 'rgba(79,195,247,0.2)' : '#2a2d35';
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = isHighlight ? 3 : 2;
+        ctx.stroke();
+
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 13px "Microsoft YaHei"';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, pos.x, pos.y);
+
+        ctx.fillStyle = state === 'ESTABLISHED' ? '#66bb6a' :
+                        state === 'CLOSED' ? '#888' :
+                        state.includes('SYN') || state.includes('FIN') || state.includes('WAIT') || state.includes('LAST') ? '#ffa726' : '#4fc3f7';
+        ctx.font = 'bold 10px "Microsoft YaHei"';
+        ctx.fillText(state, pos.x, pos.y + 45);
+    }
+
+    function drawArrow(fromPos, toPos, label, color, progress) {
+        const dx = toPos.x - fromPos.x;
+        const dy = toPos.y - fromPos.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const unitX = dx / dist;
+        const unitY = dy / dist;
+
+        const sx = fromPos.x + unitX * 35;
+        const sy = fromPos.y + unitY * 35 - (mode === 'connect' ? 0 : (fromPos === clientPos ? -15 : 15));
+        const ex = fromPos.x + unitX * (35 + (dist - 70) * progress);
+        const ey = fromPos.y + unitY * (35 + (dist - 70) * progress) - (mode === 'connect' ? 0 : (fromPos === clientPos ? -15 : 15));
+
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        if (progress > 0.6) {
+            const angle = Math.atan2(dy, dx);
+            ctx.beginPath();
+            ctx.moveTo(ex, ey);
+            ctx.lineTo(ex - 10 * Math.cos(angle - 0.5), ey - 10 * Math.sin(angle - 0.5));
+            ctx.lineTo(ex - 10 * Math.cos(angle + 0.5), ey - 10 * Math.sin(angle + 0.5));
+            ctx.closePath();
+            ctx.fillStyle = color;
+            ctx.fill();
+        }
+
+        if (progress > 0.2 && label) {
+            const midX = (fromPos.x + toPos.x) / 2;
+            const midY = (fromPos.y + toPos.y) / 2 - 25;
+            ctx.fillStyle = color;
+            ctx.font = 'bold 10px "Microsoft YaHei"';
+            ctx.textAlign = 'center';
+            ctx.fillText(label, midX, midY);
+        }
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#888';
+        ctx.font = '12px "Microsoft YaHei"';
+        ctx.textAlign = 'left';
+        ctx.fillText('TCP 连接拓扑', 10, 18);
+
+        // Static connection line
+        ctx.setLineDash([8, 4]);
+        ctx.beginPath();
+        ctx.moveTo(clientPos.x + 30, clientPos.y);
+        ctx.lineTo(serverPos.x - 30, serverPos.y);
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const colorClient = mode === 'release' ? '#ef5350' : '#4fc3f7';
+        const colorServer = '#66bb6a';
+
+        const clientHighlight = currentStep >= 0;
+        const serverHighlight = currentStep >= 1;
+
+        drawNode(clientPos, '客户端', clientState, colorClient, clientHighlight);
+        drawNode(serverPos, '服务器', serverState, colorServer, serverHighlight);
+
+        if (currentStep >= 0 && currentStep < getSteps().length) {
+            const step = getSteps()[currentStep];
+            step.arrows.forEach(a => {
+                const fromP = a.f === 'client' ? clientPos : serverPos;
+                const toP = a.t === 'client' ? clientPos : serverPos;
+                drawArrow(fromP, toP, a.label, a.color, stepProgress);
+            });
+        }
+
+        document.getElementById('stepDescription').textContent =
+            currentStep >= 0 && currentStep < getSteps().length
+                ? getSteps()[currentStep].desc
+                : (mode === 'connect' ? '点击"建立连接"开始三次握手' : '点击"释放连接"开始四次挥手');
+    }
+
+    function updateStateTable() {
+        document.getElementById('clientState').textContent = clientState;
+        document.getElementById('serverState').textContent = serverState;
+        document.getElementById('clientSeq').textContent = clientSeq;
+        document.getElementById('serverSeq').textContent = serverSeq;
+    }
+
+    function animate() {
+        if (currentStep < 0 || currentStep >= getSteps().length) {
+            draw();
+            return;
+        }
+
+        stepProgress += 0.018;
+        if (stepProgress >= 1) {
+            stepProgress = 1;
+            draw();
+
+            const step = getSteps()[currentStep];
+            clientState = step.clientState;
+            serverState = step.serverState;
+            updateStateTable();
+
+            if (mode === 'release' && currentStep === 3) {
+                setTimeout(() => {
+                    clientState = 'CLOSED';
+                    updateStateTable();
+                }, 1500);
+            }
+
+            updateButtons(false);
+            return;
+        }
+
+        draw();
+        animationId = requestAnimationFrame(animate);
+    }
+
+    function nextStep() {
+        const totalSteps = getSteps().length;
+        if (currentStep >= totalSteps) return;
+
+        if (animationId) {
+            cancelAnimationFrame(animationId);
+            animationId = null;
+            stepProgress = 1;
+            const step = getSteps()[currentStep];
+            clientState = step.clientState;
+            serverState = step.serverState;
+            updateStateTable();
+        }
+
+        currentStep++;
+        if (currentStep >= totalSteps) {
+            if (mode === 'release' && currentStep === 4) {
+                setTimeout(() => {
+                    clientState = 'CLOSED';
+                    updateStateTable();
+                }, 1500);
+            }
+            updateButtons(true);
+            draw();
+            return;
+        }
+
+        stepProgress = 0;
+        updateButtons(false);
+        document.getElementById('stepDescription').textContent = getSteps()[currentStep].desc;
+        animationId = requestAnimationFrame(animate);
+    }
+
+    function updateButtons(allDone) {
+        const btnConnect = document.getElementById('btnConnect');
+        const btnRelease = document.getElementById('btnRelease');
+        const btnNext = document.getElementById('btnNext');
+
+        if (currentStep < 0 || !mode) {
+            btnConnect.disabled = false;
+            btnRelease.disabled = false;
+            btnNext.disabled = true;
+        } else if (allDone) {
+            btnConnect.disabled = true;
+            btnRelease.disabled = true;
+            btnNext.disabled = true;
+        } else {
+            btnConnect.disabled = true;
+            btnRelease.disabled = true;
+            btnNext.disabled = false;
+        }
+    }
+
+    function startAnimation(newMode) {
+        if (animationId) cancelAnimationFrame(animationId);
+        mode = newMode;
+        currentStep = 0;
+        stepProgress = 0;
+
+        if (newMode === 'connect') {
+            clientState = 'CLOSED';
+            serverState = 'CLOSED';
+            clientSeq = Math.floor(Math.random() * 9000) + 1000;
+            serverSeq = Math.floor(Math.random() * 9000) + 1000;
+        } else {
+            clientState = 'ESTABLISHED';
+            serverState = 'ESTABLISHED';
+        }
+
+        updateStateTable();
+        updateButtons(false);
+        document.getElementById('stepDescription').textContent = getSteps()[0].desc;
+        animationId = requestAnimationFrame(animate);
+    }
+
+    function resetAnimation() {
+        if (animationId) cancelAnimationFrame(animationId);
+        animationId = null;
+        currentStep = -1;
+        stepProgress = 0;
+        mode = '';
+        clientState = 'CLOSED';
+        serverState = 'CLOSED';
+        updateStateTable();
+        updateButtons(true);
+        document.getElementById('stepDescription').textContent = '点击"建立连接"开始三次握手，或点击"释放连接"开始四次挥手';
+        draw();
+    }
+
+    document.getElementById('btnConnect').addEventListener('click', () => startAnimation('connect'));
+    document.getElementById('btnRelease').addEventListener('click', () => startAnimation('release'));
+    document.getElementById('btnNext').addEventListener('click', nextStep);
+    document.getElementById('btnReset').addEventListener('click', resetAnimation);
+
+    updateStateTable();
+    draw();
+})();
+</script>
+{% endblock %}

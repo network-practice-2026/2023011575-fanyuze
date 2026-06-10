@@ -1,0 +1,429 @@
+{% extends "base.html" %}
+{% block title %}知识体系与知识图谱 - 计算机网络{% endblock %}
+
+{% block head %}
+<script src="https://d3js.org/d3.v7.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<h1 class="page-title">计算机网络知识体系</h1>
+<p class="page-subtitle">TCP/IP 五层模型知识点整理、增删改查、模糊搜索与 D3.js 知识图谱</p>
+
+<div class="tabs" id="layerTabs">
+    <button class="tab-btn active" data-layer="应用层">应用层</button>
+    <button class="tab-btn" data-layer="传输层">传输层</button>
+    <button class="tab-btn" data-layer="网络层">网络层</button>
+    <button class="tab-btn" data-layer="数据链路层">数据链路层</button>
+    <button class="tab-btn" data-layer="物理层">物理层</button>
+    <button class="tab-btn" data-layer="graph">知识图谱</button>
+</div>
+
+<!-- Layer tabs content -->
+<div id="tabContent">
+    <div class="tab-content active" id="tab-应用层"></div>
+    <div class="tab-content" id="tab-传输层"></div>
+    <div class="tab-content" id="tab-网络层"></div>
+    <div class="tab-content" id="tab-数据链路层"></div>
+    <div class="tab-content" id="tab-物理层"></div>
+</div>
+
+<!-- Graph tab -->
+<div id="tab-graph" class="tab-content">
+    <div class="card">
+        <h3 class="card-title">计算机网络知识图谱</h3>
+        <p class="card-text">力导向图展示各层及其协议/技术的层次关系。节点可拖拽，点击查看详情。</p>
+        <div id="graph-container"></div>
+    </div>
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal-overlay" id="editModal">
+    <div class="modal">
+        <h3 id="modalTitle">新增知识点</h3>
+        <input type="hidden" id="editId">
+        <div class="form-group">
+            <label>所属层次</label>
+            <select id="editLayer">
+                <option value="应用层">应用层</option>
+                <option value="传输层">传输层</option>
+                <option value="网络层">网络层</option>
+                <option value="数据链路层">数据链路层</option>
+                <option value="物理层">物理层</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>知识点内容 <span style="color:#ef5350;">*</span></label>
+            <textarea id="editKnowledge" placeholder="请输入知识点内容..."></textarea>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" id="btnModalCancel">取消</button>
+            <button class="btn btn-primary" id="btnModalSave">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirm Modal -->
+<div class="modal-overlay" id="deleteModal">
+    <div class="modal">
+        <h3>确认删除</h3>
+        <p style="color:#e0e0e0;">确定要删除此知识点吗？此操作不可撤销。</p>
+        <input type="hidden" id="deleteId">
+        <div class="modal-actions">
+            <button class="btn btn-secondary" id="btnDeleteCancel">取消</button>
+            <button class="btn btn-danger" id="btnDeleteConfirm">确认删除</button>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    let currentLayer = '应用层';
+    let currentPage = 1;
+    let currentKeyword = '';
+
+    // ===== Tab Switching =====
+    document.querySelectorAll('#layerTabs .tab-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('#layerTabs .tab-btn').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            const layer = this.dataset.layer;
+
+            if (layer === 'graph') {
+                document.querySelectorAll('#tabContent > .tab-content').forEach(t => t.classList.remove('active'));
+                document.getElementById('tab-graph').classList.add('active');
+                renderGraph();
+            } else {
+                document.getElementById('tab-graph').classList.remove('active');
+                document.querySelectorAll('#tabContent > .tab-content').forEach(t => t.classList.remove('active'));
+                document.getElementById('tab-' + layer).classList.add('active');
+                currentLayer = layer;
+                currentPage = 1;
+                currentKeyword = '';
+                loadLayerData(layer);
+            }
+        });
+    });
+
+    // ===== Load Layer Data =====
+    function loadLayerData(layer) {
+        const tab = document.getElementById('tab-' + layer);
+        tab.innerHTML = '<div style="text-align:center;padding:40px;color:#888;">加载中...</div>';
+
+        loadLayerInfo(layer, tab);
+    }
+
+    async function loadLayerInfo(layer, container) {
+        try {
+            const [resp, respAll] = await Promise.all([
+                fetch('/api/knowledge?layer=' + encodeURIComponent(layer) + '&page=' + currentPage + '&per_page=5&keyword=' + encodeURIComponent(currentKeyword)),
+                fetch('/api/knowledge?layer=' + encodeURIComponent(layer) + '&per_page=100')
+            ]);
+
+            const data = await resp.json();
+            const dataAll = await respAll.json();
+
+            // Extract layer info from all items
+            const items = dataAll.items || [];
+            const functionText = items.length > 0 ? (items[0].function || '暂无') : '暂无';
+            const protocols = [...new Set(items.flatMap(i => (i.protocols || '').split(',').map(s => s.trim()).filter(Boolean)))];
+            const devices = [...new Set(items.flatMap(i => (i.devices || '').split(',').map(s => s.trim()).filter(Boolean)))];
+
+            renderLayerTab(container, layer, functionText, protocols, devices, data);
+        } catch (e) {
+            container.innerHTML = '<div style="text-align:center;padding:40px;color:#ef5350;">加载失败: ' + e.message + '</div>';
+        }
+    }
+
+    function renderLayerTab(container, layer, functionText, protocols, devices, data) {
+        let html = `
+            <div class="card">
+                <h3 class="card-title">${layer} - 概述</h3>
+                <p class="card-text"><strong>主要功能：</strong>${functionText}</p>
+                <p class="card-text"><strong>常见协议/技术：</strong>${protocols.length ? protocols.join('、') : '暂无'}</p>
+                <p class="card-text"><strong>相关设备/数据单位：</strong>${devices.length ? devices.join('、') : '暂无'}</p>
+            </div>
+
+            <div class="card">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                    <h3 class="card-title" style="margin-bottom:0;">知识点列表</h3>
+                    <button class="btn btn-primary btn-sm" onclick="openAddModal('${layer}')">+ 新增知识点</button>
+                </div>
+                <div class="search-bar">
+                    <input type="text" id="searchInput_${layer}" placeholder="模糊搜索知识点..." value="${currentKeyword}">
+                    <button class="btn btn-primary btn-sm" onclick="searchKnowledge('${layer}')">搜索</button>
+                    <button class="btn btn-secondary btn-sm" onclick="clearSearch('${layer}')">清除</button>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width:50px;">ID</th>
+                                <th>知识点内容</th>
+                                <th style="width:140px;">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${(data.items || []).length === 0
+                                ? '<tr><td colspan="3" style="text-align:center;color:#666;">暂无数据</td></tr>'
+                                : data.items.map(item => `
+                                    <tr>
+                                        <td>${item.id}</td>
+                                        <td>${escapeHtml(item.knowledge || '')}</td>
+                                        <td>
+                                            <button class="btn btn-warning btn-sm" onclick="openEditModal(${item.id}, '${escapeHtml(layer)}', '${escapeHtml(item.knowledge || '')}')">编辑</button>
+                                            <button class="btn btn-danger btn-sm" onclick="openDeleteModal(${item.id})">删除</button>
+                                        </td>
+                                    </tr>
+                                `).join('')
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                ${renderPagination(data)}
+            </div>
+        `;
+        container.innerHTML = html;
+    }
+
+    function renderPagination(data) {
+        if (data.total_pages <= 1) return '';
+        let html = '<div class="pagination">';
+        html += `<button ${data.page <= 1 ? 'disabled' : ''} onclick="goToPage(${data.page - 1})">上一页</button>`;
+        html += `<span>第 ${data.page} / ${data.total_pages} 页 (共 ${data.total} 条)</span>`;
+        html += `<button ${data.page >= data.total_pages ? 'disabled' : ''} onclick="goToPage(${data.page + 1})">下一页</button>`;
+        html += '</div>';
+        return html;
+    }
+
+    // ===== CRUD Operations =====
+    window.openAddModal = function(layer) {
+        document.getElementById('editId').value = '';
+        document.getElementById('editLayer').value = layer;
+        document.getElementById('editKnowledge').value = '';
+        document.getElementById('modalTitle').textContent = '新增知识点 - ' + layer;
+        document.getElementById('editModal').classList.add('show');
+    };
+
+    window.openEditModal = function(id, layer, knowledge) {
+        document.getElementById('editId').value = id;
+        document.getElementById('editLayer').value = layer;
+        document.getElementById('editKnowledge').value = unescapeHtml(knowledge);
+        document.getElementById('modalTitle').textContent = '编辑知识点 #' + id;
+        document.getElementById('editModal').classList.add('show');
+    };
+
+    window.openDeleteModal = function(id) {
+        document.getElementById('deleteId').value = id;
+        document.getElementById('deleteModal').classList.add('show');
+    };
+
+    document.getElementById('btnModalCancel').addEventListener('click', () => {
+        document.getElementById('editModal').classList.remove('show');
+    });
+
+    document.getElementById('btnDeleteCancel').addEventListener('click', () => {
+        document.getElementById('deleteModal').classList.remove('show');
+    });
+
+    document.getElementById('btnModalSave').addEventListener('click', async () => {
+        const id = document.getElementById('editId').value;
+        const layer = document.getElementById('editLayer').value;
+        const knowledge = document.getElementById('editKnowledge').value.trim();
+
+        if (!knowledge) {
+            alert('知识点内容不能为空！');
+            return;
+        }
+
+        const payload = { layer, knowledge };
+        const url = id ? '/api/knowledge/' + id : '/api/knowledge';
+        const method = id ? 'PUT' : 'POST';
+
+        try {
+            const resp = await fetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (resp.ok) {
+                document.getElementById('editModal').classList.remove('show');
+                loadLayerData(currentLayer);
+            } else {
+                const err = await resp.json();
+                alert('操作失败: ' + (err.error || '未知错误'));
+            }
+        } catch (e) {
+            alert('请求失败: ' + e.message);
+        }
+    });
+
+    document.getElementById('btnDeleteConfirm').addEventListener('click', async () => {
+        const id = document.getElementById('deleteId').value;
+        try {
+            const resp = await fetch('/api/knowledge/' + id, { method: 'DELETE' });
+            if (resp.ok) {
+                document.getElementById('deleteModal').classList.remove('show');
+                loadLayerData(currentLayer);
+            } else {
+                alert('删除失败');
+            }
+        } catch (e) {
+            alert('请求失败: ' + e.message);
+        }
+    });
+
+    // ===== Search & Pagination =====
+    window.searchKnowledge = function(layer) {
+        const input = document.getElementById('searchInput_' + layer);
+        currentKeyword = input ? input.value.trim() : '';
+        currentPage = 1;
+        loadLayerData(layer);
+    };
+
+    window.clearSearch = function(layer) {
+        currentKeyword = '';
+        currentPage = 1;
+        const input = document.getElementById('searchInput_' + layer);
+        if (input) input.value = '';
+        loadLayerData(layer);
+    };
+
+    window.goToPage = function(page) {
+        currentPage = page;
+        loadLayerData(currentLayer);
+    };
+
+    // ===== Utility =====
+    function escapeHtml(text) {
+        if (!text) return '';
+        return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+    }
+
+    function unescapeHtml(text) {
+        if (!text) return '';
+        return text.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#039;/g,"'");
+    }
+
+    // ===== Knowledge Graph =====
+    let graphInitialized = false;
+
+    async function renderGraph() {
+        const container = document.getElementById('graph-container');
+        if (!container) return;
+
+        container.innerHTML = '';
+
+        try {
+            const resp = await fetch('/api/knowledge/graph');
+            const data = await resp.json();
+
+            const width = container.clientWidth || 800;
+            const height = 600;
+
+            const svg = d3.select('#graph-container')
+                .append('svg')
+                .attr('viewBox', [0, 0, width, height]);
+
+            // Zoom
+            const g = svg.append('g');
+            svg.call(d3.zoom().scaleExtent([0.3, 3]).on('zoom', (event) => {
+                g.attr('transform', event.transform);
+            }));
+
+            // Color scale
+            const colorMap = {
+                root: '#4fc3f7',
+                layer: '#66bb6a',
+                protocol: '#ffa726'
+            };
+
+            // Force simulation
+            const simulation = d3.forceSimulation(data.nodes)
+                .force('link', d3.forceLink(data.links).id(d => d.id).distance(d =>
+                    d.source.group === 'root' ? 140 : d.target.group === 'protocol' ? 80 : 100
+                ))
+                .force('charge', d3.forceManyBody().strength(-400))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(d => d.size + 2));
+
+            // Links
+            const link = g.append('g')
+                .selectAll('line')
+                .data(data.links)
+                .join('line')
+                .attr('stroke', '#444')
+                .attr('stroke-width', 1.5)
+                .attr('stroke-opacity', 0.6);
+
+            // Nodes
+            const node = g.append('g')
+                .selectAll('g')
+                .data(data.nodes)
+                .join('g')
+                .call(d3.drag()
+                    .on('start', (event, d) => {
+                        if (!event.active) simulation.alphaTarget(0.3).restart();
+                        d.fx = d.x; d.fy = d.y;
+                    })
+                    .on('drag', (event, d) => {
+                        d.fx = event.x; d.fy = event.y;
+                    })
+                    .on('end', (event, d) => {
+                        if (!event.active) simulation.alphaTarget(0);
+                        d.fx = null; d.fy = null;
+                    })
+                );
+
+            node.append('circle')
+                .attr('r', d => d.size)
+                .attr('fill', d => colorMap[d.group] || '#888')
+                .attr('stroke', '#1a1d23')
+                .attr('stroke-width', 2);
+
+            node.append('text')
+                .text(d => d.id)
+                .attr('dy', d => d.size + 14)
+                .attr('text-anchor', 'middle')
+                .attr('fill', '#d0d0d0')
+                .attr('font-size', d => d.group === 'root' ? '13px' : d.group === 'layer' ? '11px' : '9px');
+
+            // Tooltip
+            const tooltip = d3.select('body').append('div')
+                .attr('class', 'graph-tooltip')
+                .style('position', 'absolute')
+                .style('display', 'none');
+
+            node.on('click', (event, d) => {
+                tooltip.style('display', 'block')
+                    .html(`<strong>${d.id}</strong><br><span style="color:#888;font-size:0.8rem;">类型: ${d.group === 'root' ? '根节点' : d.group === 'layer' ? '协议层' : '协议/技术'}</span>`)
+                    .style('left', (event.pageX + 12) + 'px')
+                    .style('top', (event.pageY - 30) + 'px');
+
+                setTimeout(() => tooltip.style('display', 'none'), 3000);
+            });
+
+            // Simulation tick
+            simulation.on('tick', () => {
+                link
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+
+                node.attr('transform', d => `translate(${d.x},${d.y})`);
+            });
+
+            graphInitialized = true;
+        } catch (e) {
+            container.innerHTML = '<div style="text-align:center;padding:40px;color:#ef5350;">加载图谱失败: ' + e.message + '</div>';
+        }
+    }
+
+    // ===== Initialize =====
+    loadLayerData('应用层');
+})();
+</script>
+{% endblock %}

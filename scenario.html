@@ -1,0 +1,408 @@
+{% extends "base.html" %}
+{% block title %}综合网络场景模拟 - 计算机网络{% endblock %}
+
+{% block content %}
+<h1 class="page-title">综合网络场景模拟</h1>
+<p class="page-subtitle">模拟从 H1 首次访问 www.abc.com 的完整通信过程：ARP → DNS → TCP → HTTP</p>
+
+<div style="display:flex; gap:20px; flex-wrap:wrap;">
+    <div style="flex:1; min-width:650px;">
+        <div class="card" style="padding:12px;">
+            <div class="btn-group">
+                <button class="btn btn-primary" id="btnPrev" disabled>上一步</button>
+                <button class="btn btn-primary" id="btnNext">下一步</button>
+                <button class="btn btn-success" id="btnAuto">自动播放</button>
+                <button class="btn btn-secondary" id="btnReset">重置</button>
+            </div>
+            <div class="step-indicator">
+                <span class="step-badge" id="stepBadge">就绪</span>
+                <span id="stepTitle" style="color:#b0b0b0;">点击"下一步"开始模拟</span>
+            </div>
+            <div class="canvas-container">
+                <canvas id="scenarioCanvas" width="870" height="450"></canvas>
+            </div>
+        </div>
+    </div>
+    <div style="width:320px;">
+        <div class="card" style="padding:14px; margin-bottom:12px;">
+            <h3 style="color:#4fc3f7; font-size:1rem; margin-bottom:8px;">ARP 表 (H1)</h3>
+            <div class="table-container">
+                <table id="arpTable">
+                    <thead><tr><th>IP地址</th><th>MAC地址</th></tr></thead>
+                    <tbody><tr><td colspan="2" style="color:#666;text-align:center;">空</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card" style="padding:14px; margin-bottom:12px;">
+            <h3 style="color:#ffa726; font-size:1rem; margin-bottom:8px;">交换表 (交换机 S)</h3>
+            <div class="table-container">
+                <table id="switchTable">
+                    <thead><tr><th>MAC地址</th><th>端口</th></tr></thead>
+                    <tbody><tr><td colspan="2" style="color:#666;text-align:center;">空</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="info-panel" style="max-height:180px; font-size:0.85rem;">
+            <h3>当前步骤详情</h3>
+            <div id="stepDetail">尚未开始</div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const canvas = document.getElementById('scenarioCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Node positions
+    const pos = {
+        H1: { x: 80, y: 100 },
+        H2: { x: 80, y: 220 },
+        DNS: { x: 80, y: 340 },
+        Switch: { x: 300, y: 220 },
+        Router: { x: 540, y: 220 },
+        Web: { x: 750, y: 220 }
+    };
+
+    // MAC addresses
+    const MAC = {
+        H1: '00:1A:2B:3C:4D:01',
+        H2: '00:1A:2B:3C:4D:02',
+        DNS: '00:1A:2B:3C:4D:03',
+        Router: '00:1A:2B:3C:4D:04',
+        Switch: '00:1A:2B:3C:4D:05',
+        Web: '00:1A:2B:3C:4D:06'
+    };
+
+    // IP addresses
+    const IP = {
+        H1: '192.168.1.10',
+        H2: '192.168.1.20',
+        DNS: '192.168.1.1',
+        Router: '192.168.1.254',
+        Web: '203.0.113.10'
+    };
+
+    let arpTable = {};  // IP -> MAC
+    let switchTable = {};  // MAC -> port
+    let currentStep = 0;
+    let animationId = null;
+    let arrowProgress = 0;
+    let autoPlaying = false;
+    let highlightPath = [];
+
+    const steps = [
+        {
+            num: 1, title: 'H1 检查 ARP 表',
+            protocol: 'ARP', cast: '广播',
+            srcMAC: MAC.H1, dstMAC: 'FF:FF:FF:FF:FF:FF',
+            srcIP: IP.H1, dstIP: IP.Router,
+            path: ['H1'],
+            switchAction: '无',
+            detail: 'H1 要访问 www.abc.com (IP: ' + IP.Web + ')，发现不在本地网段，需要先发给网关 ' + IP.Router + '。检查 ARP 表，未找到网关 MAC 地址，发送 ARP Request 广播。'
+        },
+        {
+            num: 2, title: 'ARP Request 广播',
+            protocol: 'ARP Request', cast: '广播',
+            srcMAC: MAC.H1, dstMAC: 'FF:FF:FF:FF:FF:FF',
+            srcIP: IP.H1, dstIP: IP.Router,
+            path: ['H1', 'Switch', 'Router'],
+            switchAction: '收到帧，学习源 MAC ' + MAC.H1 + ' → 端口1。目的 MAC 为广播地址，泛洪至所有其他端口。',
+            arpAdd: {},
+            switchAdd: { mac: MAC.H1, port: 1 },
+            detail: 'H1 发送 ARP Request 广播帧（Who has ' + IP.Router + '?），帧经过交换机 S。交换机学习到 H1 的 MAC 地址，由于目的 MAC 为广播地址，向除接收端口外的所有端口泛洪。路由器 R 收到此帧。'
+        },
+        {
+            num: 3, title: 'ARP Reply 单播',
+            protocol: 'ARP Reply', cast: '单播',
+            srcMAC: MAC.Router, dstMAC: MAC.H1,
+            srcIP: IP.Router, dstIP: IP.H1,
+            path: ['Router', 'Switch', 'H1'],
+            switchAction: '收到帧，学习源 MAC ' + MAC.Router + ' → 端口3。查交换表已知 ' + MAC.H1 + ' 在端口1，定向转发。',
+            arpAdd: { ip: IP.Router, mac: MAC.Router },
+            switchAdd: { mac: MAC.Router, port: 3 },
+            detail: '路由器 R 收到 ARP Request 后，发现目标 IP 是自己，回复 ARP Reply（' + IP.Router + ' is at ' + MAC.Router + '）。交换机学习到 R 的 MAC 地址，查表找到 H1 的端口并定向转发。H1 收到后更新 ARP 表。'
+        },
+        {
+            num: 4, title: 'H1 发送 DNS 查询',
+            protocol: 'DNS (UDP)', cast: '单播',
+            srcMAC: MAC.H1, dstMAC: MAC.DNS,
+            srcIP: IP.H1, dstIP: IP.DNS,
+            path: ['H1', 'Switch', 'DNS'],
+            switchAction: '收到帧，学习源 MAC（已存在则刷新）。查交换表，' + MAC.DNS + ' 未知 → 泛洪所有端口。',
+            arpAdd: {},
+            switchAdd: {},
+            detail: 'H1 构造 DNS 查询报文（www.abc.com 的 A 记录），用 UDP 封装，目的端口 53。帧目的 MAC 为 DNS 服务器 MAC（假设 H1 已知 DNS 的 MAC）。交换机收到后，DNS 的 MAC 仍在交换表中未知，泛洪至所有端口。'
+        },
+        {
+            num: 5, title: 'DNS 响应返回',
+            protocol: 'DNS Response', cast: '单播',
+            srcMAC: MAC.DNS, dstMAC: MAC.H1,
+            srcIP: IP.DNS, dstIP: IP.H1,
+            path: ['DNS', 'Switch', 'H1'],
+            switchAction: '收到帧，学习源 MAC ' + MAC.DNS + ' → 端口2。查交换表已知 ' + MAC.H1 + ' 在端口1，定向转发。',
+            arpAdd: {},
+            switchAdd: { mac: MAC.DNS, port: 2 },
+            detail: 'DNS 服务器查询得到 www.abc.com 的 IP 地址为 ' + IP.Web + '，构造 DNS 响应报文返回给 H1。交换机学习 DNS 的 MAC 地址，定向转发给 H1。H1 获得目标 IP：' + IP.Web + '。'
+        },
+        {
+            num: 6, title: 'TCP 三次握手 (SYN)',
+            protocol: 'TCP SYN', cast: '单播',
+            srcMAC: MAC.H1, dstMAC: MAC.Router,
+            srcIP: IP.H1, dstIP: IP.Web,
+            path: ['H1', 'Switch', 'Router'],
+            switchAction: '定向转发至端口3（Router）。交换表已学习所有相关 MAC。',
+            arpAdd: {},
+            switchAdd: {},
+            detail: 'H1 向 Web 服务器发起 TCP 连接，发送 SYN 报文（seq=' + (Math.floor(Math.random()*9000)+1000) + '）。帧的源 MAC 为 H1，目的 MAC 为网关路由器 R（因为目标不在本地网段）。交换机定向转发至路由器端口。'
+        },
+        {
+            num: 7, title: 'TCP 三次握手完成 + HTTP 请求',
+            protocol: 'TCP/HTTP', cast: '单播',
+            srcMAC: MAC.H1, dstMAC: MAC.Router,
+            srcIP: IP.H1, dstIP: IP.Web,
+            path: ['H1', 'Switch', 'Router'],
+            switchAction: '交换表学习完成，所有帧定向转发。路径：H1→交换机→路由器→Internet→Web服务器。',
+            arpAdd: {},
+            switchAdd: {},
+            detail: 'TCP 三次握手完成（SYN→SYN-ACK→ACK），连接建立。H1 发送 HTTP GET / HTTP/1.1 请求报文。封装在 TCP 段→IP 包（源IP=' + IP.H1 + '，目的IP=' + IP.Web + '）→以太网帧（源MAC=' + MAC.H1 + '，目的MAC=' + MAC.Router + '）。路由器收到后解封装并根据路由表转发至 Internet。'
+        },
+        {
+            num: 8, title: '通信完成总结',
+            protocol: '全部', cast: '-',
+            srcMAC: '-', dstMAC: '-',
+            srcIP: '-', dstIP: '-',
+            path: [],
+            switchAction: '交换表现在完整记录了各端口的 MAC 地址映射，后续帧全部定向转发，不再泛洪。',
+            arpAdd: {},
+            switchAdd: {},
+            detail: '从 t0 到 t1 的通信过程完成。关键结果：①ARP 表建立了网关 IP-MAC 映射；②交换机建立了完整的 MAC 地址表；③DNS 解析了 www.abc.com 的 IP；④TCP 连接建立并发送 HTTP 请求。'
+        }
+    ];
+
+    function drawTopology(highlightNodes, highlightEdges) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Title
+        ctx.fillStyle = '#888';
+        ctx.font = '12px "Microsoft YaHei"';
+        ctx.textAlign = 'left';
+        ctx.fillText('网络拓扑', 10, 16);
+
+        // Draw connections
+        const edges = [
+            ['H1', 'Switch'], ['H2', 'Switch'], ['DNS', 'Switch'],
+            ['Switch', 'Router'],
+        ];
+
+        edges.forEach(([a, b]) => {
+            const pa = pos[a], pb = pos[b];
+            const isHL = highlightEdges.some(e =>
+                (e[0] === a && e[1] === b) || (e[0] === b && e[1] === a));
+            ctx.beginPath();
+            ctx.moveTo(pa.x, pa.y);
+            ctx.lineTo(pb.x, pb.y);
+            ctx.strokeStyle = isHL ? '#ffa726' : 'rgba(255,255,255,0.08)';
+            ctx.lineWidth = isHL ? 3 : 1;
+            ctx.stroke();
+        });
+
+        // Router to Web (Internet)
+        const rp = pos.Router, wp = pos.Web;
+        ctx.beginPath();
+        ctx.moveTo(rp.x, rp.y);
+        ctx.lineTo(wp.x, wp.y);
+        const hlWeb = highlightEdges.some(e => e[0] === 'Router' && e[1] === 'Web');
+        ctx.strokeStyle = hlWeb ? '#ffa726' : 'rgba(255,255,255,0.08)';
+        ctx.lineWidth = hlWeb ? 3 : 1;
+        ctx.stroke();
+        if (hlWeb) {
+            ctx.fillStyle = '#ffa726';
+            ctx.font = '9px "Microsoft YaHei"';
+            ctx.textAlign = 'center';
+            ctx.fillText('Internet', (rp.x + wp.x) / 2, (rp.y + wp.y) / 2 - 12);
+        }
+
+        // Draw nodes
+        const labels = {
+            H1: 'H1\n' + IP.H1, H2: 'H2\n' + IP.H2,
+            DNS: 'DNS\n' + IP.DNS, Switch: '交换机S',
+            Router: '路由器R\n' + IP.Router, Web: 'Web服务器\nwww.abc.com\n' + IP.Web
+        };
+        const colors = {
+            H1: '#4fc3f7', H2: '#4fc3f7', DNS: '#66bb6a',
+            Switch: '#ab47bc', Router: '#ffa726', Web: '#ef5350'
+        };
+
+        Object.entries(pos).forEach(([key, p]) => {
+            const isHL = highlightNodes.includes(key);
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, key === 'Switch' ? 28 : 24, 0, Math.PI * 2);
+            ctx.fillStyle = isHL ? 'rgba(79,195,247,0.25)' : '#252830';
+            ctx.fill();
+            ctx.strokeStyle = colors[key];
+            ctx.lineWidth = isHL ? 3 : 2;
+            ctx.stroke();
+
+            const lines = labels[key].split('\n');
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 10px "Microsoft YaHei"';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            lines.forEach((line, i) => {
+                ctx.fillText(line, p.x, p.y + (i - (lines.length - 1) / 2) * 14);
+            });
+        });
+
+        // Legend
+        ctx.fillStyle = '#555';
+        ctx.font = '9px "Microsoft YaHei"';
+        ctx.textAlign = 'right';
+        ctx.fillText('图例：蓝色=主机  绿色=DNS  紫色=交换机  橙色=路由器  红色=Web服务器', canvas.width - 10, canvas.height - 6);
+    }
+
+    function buildPaths(step) {
+        const nodes = [];
+        const edges = [];
+        const path = step.path;
+        for (let i = 0; i < path.length; i++) {
+            nodes.push(path[i]);
+            if (i < path.length - 1) {
+                edges.push([path[i], path[i + 1]]);
+            }
+        }
+        return { nodes, edges };
+    }
+
+    function updateInfo(step) {
+        document.getElementById('stepBadge').textContent = '步骤 ' + step.num;
+        document.getElementById('stepTitle').textContent = step.title;
+        document.getElementById('stepDetail').innerHTML =
+            '<div class="info-item"><span class="label">协议</span><span class="value">' + step.protocol + '</span></div>' +
+            '<div class="info-item"><span class="label">广播/单播</span><span class="value">' + step.cast + '</span></div>' +
+            '<div class="info-item"><span class="label">源MAC</span><span class="value">' + step.srcMAC + '</span></div>' +
+            '<div class="info-item"><span class="label">目的MAC</span><span class="value">' + step.dstMAC + '</span></div>' +
+            '<div class="info-item"><span class="label">源IP</span><span class="value">' + step.srcIP + '</span></div>' +
+            '<div class="info-item"><span class="label">目的IP</span><span class="value">' + step.dstIP + '</span></div>' +
+            '<div style="margin-top:8px;color:#ffa726;font-weight:600;">交换机处理：</div>' +
+            '<div style="color:#d0d0d0;font-size:0.82rem;">' + step.switchAction + '</div>' +
+            '<div style="margin-top:6px;color:#e0e0e0;">' + step.detail + '</div>';
+    }
+
+    function applyChanges(step) {
+        if (step.arpAdd && step.arpAdd.ip) {
+            arpTable[step.arpAdd.ip] = step.arpAdd.mac;
+        }
+        if (step.switchAdd && step.switchAdd.mac) {
+            switchTable[step.switchAdd.mac] = step.switchAdd.port;
+        }
+    }
+
+    function updateTables() {
+        const arpTbody = document.querySelector('#arpTable tbody');
+        const arpKeys = Object.keys(arpTable);
+        if (arpKeys.length === 0) {
+            arpTbody.innerHTML = '<tr><td colspan="2" style="color:#666;text-align:center;">空</td></tr>';
+        } else {
+            arpTbody.innerHTML = arpKeys.map(ip =>
+                '<tr><td>' + ip + '</td><td>' + arpTable[ip] + '</td></tr>'
+            ).join('');
+        }
+
+        const swTbody = document.querySelector('#switchTable tbody');
+        const swKeys = Object.keys(switchTable);
+        if (swKeys.length === 0) {
+            swTbody.innerHTML = '<tr><td colspan="2" style="color:#666;text-align:center;">空</td></tr>';
+        } else {
+            swTbody.innerHTML = swKeys.map(mac =>
+                '<tr><td>' + mac + '</td><td>端口' + switchTable[mac] + '</td></tr>'
+            ).join('');
+        }
+    }
+
+    function goToStep(stepIndex) {
+        currentStep = stepIndex;
+        const step = steps[currentStep];
+        const { nodes, edges } = buildPaths(step);
+        drawTopology(nodes, edges);
+        updateInfo(step);
+        document.getElementById('btnPrev').disabled = currentStep === 0;
+        document.getElementById('btnNext').disabled = currentStep >= steps.length - 1;
+    }
+
+    function nextStep() {
+        if (currentStep < steps.length - 1) {
+            applyChanges(steps[currentStep]);
+            currentStep++;
+            goToStep(currentStep);
+        }
+        if (currentStep >= steps.length - 1) {
+            applyChanges(steps[currentStep]);
+            updateTables();
+            document.getElementById('btnNext').disabled = true;
+            document.getElementById('btnAuto').disabled = true;
+            document.getElementById('stepTitle').textContent = '全部步骤完成！';
+        }
+        updateTables();
+    }
+
+    function prevStep() {
+        if (currentStep > 0) {
+            // Cannot easily undo, so just go back visually
+            currentStep--;
+            goToStep(currentStep);
+            updateTables();
+        }
+    }
+
+    function reset() {
+        if (animationId) {
+            clearInterval(animationId);
+            animationId = null;
+        }
+        autoPlaying = false;
+        currentStep = 0;
+        arpTable = {};
+        switchTable = {};
+        updateTables();
+        goToStep(0);
+        document.getElementById('btnAuto').disabled = false;
+        document.getElementById('stepBadge').textContent = '就绪';
+        document.getElementById('stepTitle').textContent = '点击"下一步"开始模拟';
+    }
+
+    function autoPlay() {
+        if (autoPlaying) {
+            clearInterval(animationId);
+            autoPlaying = false;
+            document.getElementById('btnAuto').textContent = '自动播放';
+            return;
+        }
+        autoPlaying = true;
+        document.getElementById('btnAuto').textContent = '暂停';
+        animationId = setInterval(() => {
+            if (currentStep >= steps.length - 1) {
+                clearInterval(animationId);
+                autoPlaying = false;
+                document.getElementById('btnAuto').textContent = '自动播放';
+                document.getElementById('btnAuto').disabled = true;
+                return;
+            }
+            nextStep();
+        }, 2500);
+    }
+
+    document.getElementById('btnNext').addEventListener('click', nextStep);
+    document.getElementById('btnPrev').addEventListener('click', prevStep);
+    document.getElementById('btnAuto').addEventListener('click', autoPlay);
+    document.getElementById('btnReset').addEventListener('click', reset);
+
+    // Initialize
+    goToStep(0);
+    updateTables();
+})();
+</script>
+{% endblock %}

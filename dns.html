@@ -1,0 +1,387 @@
+{% extends "base.html" %}
+{% block title %}DNS域名解析可视化 - 计算机网络{% endblock %}
+
+{% block content %}
+<h1 class="page-title">DNS 域名解析过程可视化</h1>
+<p class="page-subtitle">模拟从客户端发起域名查询到获取IP地址的完整DNS解析流程</p>
+
+<div class="card">
+    <div class="form-group" style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+        <div style="flex:1; min-width:200px;">
+            <label for="domainInput">输入域名</label>
+            <input type="text" id="domainInput" value="www.example.com" placeholder="例如 www.example.com">
+        </div>
+        <button class="btn btn-primary" id="btnStart">开始解析</button>
+        <button class="btn btn-primary" id="btnNext" disabled>下一步</button>
+        <button class="btn btn-secondary" id="btnReset">重置</button>
+    </div>
+</div>
+
+<div class="canvas-container">
+    <canvas id="dnsCanvas" width="800" height="520"></canvas>
+</div>
+
+<div class="card">
+    <div class="info-panel" id="stepInfo" style="max-height:120px;">
+        <h3>当前步骤</h3>
+        <p id="stepDescription">点击"开始解析"按钮启动DNS查询动画</p>
+    </div>
+</div>
+
+<div class="card">
+    <h3 class="card-title">DNS 缓存表</h3>
+    <div class="table-container">
+        <table id="cacheTable">
+            <thead>
+                <tr><th>域名</th><th>IP 地址</th><th>TTL (秒)</th></tr>
+            </thead>
+            <tbody>
+                <tr><td colspan="3" style="text-align:center;color:#666;">暂无缓存记录</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card" id="resultCard" style="display:none;">
+    <div class="alert alert-info">
+        <strong>解析结果：</strong><span id="resultText"></span>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const canvas = document.getElementById('dnsCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Node positions
+    const nodes = {
+        client:    { x: 70,  y: 320, label: '客户端',      color: '#4fc3f7' },
+        localDNS:  { x: 230, y: 320, label: '本地DNS服务器', color: '#66bb6a' },
+        rootDNS:   { x: 370, y: 110, label: '根DNS服务器',  color: '#ffa726' },
+        tldDNS:    { x: 520, y: 110, label: '顶级DNS服务器', color: '#ffa726' },
+        authDNS:   { x: 670, y: 110, label: '权威DNS服务器', color: '#ffa726' },
+        target:    { x: 670, y: 320, label: '目标服务器',    color: '#ef5350' }
+    };
+
+    let animationId = null;
+    let currentStep = -1;
+    let stepProgress = 0;
+    let parsedIP = '';
+    let cacheHits = [];
+
+    const steps = [
+        { from: 'client', to: 'localDNS', desc: '步骤1：客户端向本地DNS服务器发送域名查询请求', arrows: [{f:'client',t:'localDNS',label:'查询: '+getDomain(),color:'#4fc3f7'}] },
+        { from: 'localDNS', to: 'localDNS', desc: '步骤2：本地DNS服务器检查缓存...', isCheck: true },
+        { from: 'localDNS', to: 'rootDNS', desc: '步骤3：缓存未命中，本地DNS向根DNS服务器发起迭代查询', arrows: [{f:'localDNS',t:'rootDNS',label:'查询权威DNS',color:'#ffa726'}] },
+        { from: 'rootDNS', to: 'localDNS', desc: '步骤4：根DNS服务器返回顶级DNS服务器地址', arrows: [{f:'rootDNS',t:'localDNS',label:'返回顶级DNS地址',color:'#66bb6a'}] },
+        { from: 'localDNS', to: 'tldDNS', desc: '步骤5：本地DNS向顶级DNS服务器查询', arrows: [{f:'localDNS',t:'tldDNS',label:'查询权威DNS',color:'#ffa726'}] },
+        { from: 'tldDNS', to: 'localDNS', desc: '步骤6：顶级DNS服务器返回权威DNS服务器地址', arrows: [{f:'tldDNS',t:'localDNS',label:'返回权威DNS地址',color:'#66bb6a'}] },
+        { from: 'localDNS', to: 'authDNS', desc: '步骤7：本地DNS向权威DNS服务器查询', arrows: [{f:'localDNS',t:'authDNS',label:'查询域名记录',color:'#ffa726'}] },
+        { from: 'authDNS', to: 'localDNS', desc: '步骤8：权威DNS服务器返回域名对应的IP地址', arrows: [{f:'authDNS',t:'localDNS',label:'返回IP: '+getIP(),color:'#66bb6a'}] },
+        { from: 'localDNS', to: 'client', desc: '步骤9：本地DNS缓存结果并返回IP给客户端', arrows: [{f:'localDNS',t:'client',label:'返回IP: '+getIP(),color:'#66bb6a'}] }
+    ];
+
+    function getDomain() {
+        return document.getElementById('domainInput').value.trim() || 'www.example.com';
+    }
+
+    function getIP() {
+        if (parsedIP) return parsedIP;
+        const d = getDomain();
+        const h = d.split('').reduce((a,c)=>a+c.charCodeAt(0),0);
+        return `${(h%223)+1}.${(h%255)}.${((h*7)%255)}.${((h*13)%254)+1}`;
+    }
+
+    function drawNode(n, highlight) {
+        const node = nodes[n];
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, 22, 0, Math.PI * 2);
+        ctx.fillStyle = highlight ? node.color : '#2a2d35';
+        ctx.strokeStyle = node.color;
+        ctx.lineWidth = highlight ? 3 : 2;
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = highlight ? '#fff' : node.color;
+        ctx.font = 'bold 10px "Microsoft YaHei"';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(node.label.length > 8 ? node.label.substring(0,8)+'..' : node.label, node.x, node.y + 30);
+    }
+
+    function drawArrow(fromNode, toNode, label, color, progress) {
+        const fn = nodes[fromNode];
+        const tn = nodes[toNode];
+        const dx = tn.x - fn.x;
+        const dy = tn.y - fn.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const unitX = dx / dist;
+        const unitY = dy / dist;
+
+        const sx = fn.x + unitX * 25;
+        const sy = fn.y + unitY * 25;
+        const ex = fn.x + unitX * (25 + (dist - 50) * progress);
+        const ey = fn.y + unitY * (25 + (dist - 50) * progress);
+
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        if (progress > 0.6) {
+            const angle = Math.atan2(dy, dx);
+            const arrowLen = 10;
+            ctx.beginPath();
+            ctx.moveTo(ex, ey);
+            ctx.lineTo(ex - arrowLen * Math.cos(angle - 0.5), ey - arrowLen * Math.sin(angle - 0.5));
+            ctx.lineTo(ex - arrowLen * Math.cos(angle + 0.5), ey - arrowLen * Math.sin(angle + 0.5));
+            ctx.closePath();
+            ctx.fillStyle = color;
+            ctx.fill();
+        }
+
+        if (progress > 0.3 && label) {
+            const mx = fn.x + unitX * (dist / 2);
+            const my = fn.y + unitY * (dist / 2) - 14;
+            ctx.fillStyle = color;
+            ctx.font = 'bold 11px "Microsoft YaHei"';
+            ctx.textAlign = 'center';
+            ctx.fillText(label, mx, my);
+        }
+    }
+
+    function drawCacheIndicator() {
+        const node = nodes.localDNS;
+        if (cacheHits.length > 0) {
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, 26, 0, Math.PI * 2);
+            ctx.strokeStyle = '#66bb6a';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([4, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#66bb6a';
+            ctx.font = '9px "Microsoft YaHei"';
+            ctx.fillText('有缓存', node.x, node.y - 34);
+        }
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Background grid
+        ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+        ctx.lineWidth = 1;
+        for (let gx = 0; gx < canvas.width; gx += 40) {
+            ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, canvas.height); ctx.stroke();
+        }
+        for (let gy = 0; gy < canvas.height; gy += 40) {
+            ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(canvas.width, gy); ctx.stroke();
+        }
+
+        // Title
+        ctx.fillStyle = '#888';
+        ctx.font = '12px "Microsoft YaHei"';
+        ctx.textAlign = 'left';
+        ctx.fillText('DNS 解析拓扑', 10, 18);
+
+        // Draw connections (static lines)
+        const pairs = [
+            ['client','localDNS'], ['localDNS','rootDNS'], ['localDNS','tldDNS'],
+            ['localDNS','authDNS'], ['rootDNS','tldDNS'], ['tldDNS','authDNS'],
+            ['authDNS','target']
+        ];
+        pairs.forEach(([a,b]) => {
+            const na = nodes[a], nb = nodes[b];
+            ctx.beginPath();
+            ctx.moveTo(na.x, na.y);
+            ctx.lineTo(nb.x, nb.y);
+            ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        });
+
+        // Draw nodes
+        const allNodes = Object.keys(nodes);
+        allNodes.forEach(n => drawNode(n, false));
+
+        // Highlight current step nodes
+        if (currentStep >= 0 && currentStep < 9) {
+            const step = steps[currentStep];
+            if (step.arrows) {
+                step.arrows.forEach(a => {
+                    const fnN = nodes[a.f];
+                    const tnN = nodes[a.t];
+                    ctx.beginPath();
+                    ctx.arc(fnN.x, fnN.y, 22, 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(79,195,247,0.3)';
+                    ctx.fill();
+                    ctx.beginPath();
+                    ctx.arc(tnN.x, tnN.y, 22, 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(102,187,106,0.3)';
+                    ctx.fill();
+                });
+                step.arrows.forEach(a => {
+                    drawArrow(a.f, a.t, a.label, a.color, stepProgress);
+                });
+            }
+        }
+
+        drawCacheIndicator();
+
+        document.getElementById('stepDescription').textContent =
+            currentStep >= 0 && currentStep < 9 ? steps[currentStep].desc : '点击"开始解析"按钮启动DNS查询动画';
+    }
+
+    function animate() {
+        if (currentStep < 0 || currentStep >= 9) {
+            draw();
+            return;
+        }
+
+        stepProgress += 0.02;
+        if (stepProgress >= 1) {
+            stepProgress = 1;
+            draw();
+
+            if (currentStep === 1) {
+                const domain = getDomain();
+                const cached = cacheHits.find(c => c.domain === domain);
+                if (cached) {
+                    document.getElementById('stepDescription').textContent =
+                        '缓存命中！本地DNS直接返回IP: ' + cached.ip;
+                    addCacheRow(domain, cached.ip, cached.ttl);
+                    finishWithIP(cached.ip);
+                    updateButtons(true);
+                    return;
+                }
+            }
+
+            if (currentStep === 8) {
+                const domain = getDomain();
+                const ip = getIP();
+                cacheHits.push({ domain, ip, ttl: 3600 });
+                addCacheRow(domain, ip, 3600);
+                finishWithIP(ip);
+                updateButtons(true);
+                return;
+            }
+
+            updateButtons(false);
+            return;
+        }
+
+        draw();
+        animationId = requestAnimationFrame(animate);
+    }
+
+    function nextStep() {
+        if (currentStep >= 9) return;
+        if (animationId) {
+            cancelAnimationFrame(animationId);
+            animationId = null;
+            stepProgress = 1;
+            if (currentStep === 1) {
+                const domain = getDomain();
+                const cached = cacheHits.find(c => c.domain === domain);
+                if (cached) {
+                    document.getElementById('stepDescription').textContent = '缓存命中！本地DNS直接返回IP: ' + cached.ip;
+                    addCacheRow(domain, cached.ip, cached.ttl);
+                    finishWithIP(cached.ip);
+                    updateButtons(true);
+                    draw();
+                    return;
+                }
+            }
+            if (currentStep === 8) {
+                const domain = getDomain();
+                const ip = getIP();
+                cacheHits.push({ domain, ip, ttl: 3600 });
+                addCacheRow(domain, ip, 3600);
+                finishWithIP(ip);
+                updateButtons(true);
+                draw();
+                return;
+            }
+        }
+        currentStep++;
+        if (currentStep >= 9) {
+            updateButtons(true);
+            draw();
+            return;
+        }
+        stepProgress = 0;
+        updateButtons(false);
+        document.getElementById('stepDescription').textContent = steps[currentStep].desc;
+        animationId = requestAnimationFrame(animate);
+    }
+
+    function updateButtons(allDone) {
+        const btnStart = document.getElementById('btnStart');
+        const btnNext = document.getElementById('btnNext');
+        if (currentStep < 0) {
+            btnStart.disabled = false;
+            btnNext.disabled = true;
+        } else if (allDone) {
+            btnStart.disabled = true;
+            btnNext.disabled = true;
+        } else {
+            btnStart.disabled = true;
+            btnNext.disabled = false;
+        }
+    }
+
+    function addCacheRow(domain, ip, ttl) {
+        const tbody = document.querySelector('#cacheTable tbody');
+        if (tbody.querySelector('td[colspan]')) {
+            tbody.innerHTML = '';
+        }
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${domain}</td><td>${ip}</td><td>${ttl}</td>`;
+        tbody.appendChild(tr);
+    }
+
+    function finishWithIP(ip) {
+        parsedIP = ip;
+        document.getElementById('resultCard').style.display = 'block';
+        document.getElementById('resultText').textContent = '域名 ' + getDomain() + ' 解析为 IP 地址：' + ip;
+    }
+
+    function startAnimation() {
+        if (animationId) cancelAnimationFrame(animationId);
+        currentStep = 0;
+        stepProgress = 0;
+        parsedIP = '';
+        document.getElementById('resultCard').style.display = 'none';
+        document.getElementById('stepDescription').textContent = steps[0].desc;
+        updateButtons(false);
+        animationId = requestAnimationFrame(animate);
+    }
+
+    function resetAnimation() {
+        if (animationId) cancelAnimationFrame(animationId);
+        animationId = null;
+        currentStep = -1;
+        stepProgress = 0;
+        parsedIP = '';
+        document.getElementById('resultCard').style.display = 'none';
+        document.getElementById('stepDescription').textContent = '点击"开始解析"按钮启动DNS查询动画';
+        const tbody = document.querySelector('#cacheTable tbody');
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#666;">暂无缓存记录</td></tr>';
+        updateButtons(true);
+        draw();
+    }
+
+    document.getElementById('btnStart').addEventListener('click', startAnimation);
+    document.getElementById('btnNext').addEventListener('click', nextStep);
+    document.getElementById('btnReset').addEventListener('click', resetAnimation);
+
+    draw();
+})();
+</script>
+{% endblock %}

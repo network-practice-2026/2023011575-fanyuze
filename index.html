@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}首页 - 计算机网络知识体系{% endblock %}
+
+{% block content %}
+<div style="text-align:center; padding-top: 40px;">
+    <h1 class="page-title">计算机网络知识体系交互式展示系统</h1>
+    <p class="page-subtitle">基于 TCP/IP 五层模型，集知识展示、原理解析、可视化呈现与交互学习于一体</p>
+</div>
+
+<div class="home-grid">
+    <div class="home-card">
+        <div class="home-card-icon">&#128268;</div>
+        <h3>模块一：协议原理可视化</h3>
+        <p>DNS 域名解析过程动态演示<br>TCP 三次握手与四次挥手动画展示<br>真实可交互的 Canvas 动画</p>
+        <a href="/dns" class="btn btn-primary">DNS 演示</a>
+        <a href="/tcp" class="btn btn-primary" style="margin-left:8px;">TCP 演示</a>
+    </div>
+
+    <div class="home-card">
+        <div class="home-card-icon">&#127760;</div>
+        <h3>模块二：综合网络场景模拟</h3>
+        <p>从 ARP 广播到 HTTP 请求的完整链路<br>逐步骤展示 MAC/IP 变化<br>交换表与 ARP 表动态更新</p>
+        <a href="/scenario" class="btn btn-primary">进入场景</a>
+    </div>
+
+    <div class="home-card">
+        <div class="home-card-icon">&#128218;</div>
+        <h3>模块三：知识体系与图谱</h3>
+        <p>TCP/IP 五层模型知识点整理<br>增删改查 + 模糊搜索 + 分页<br>D3.js 力导向知识图谱</p>
+        <a href="/knowledge" class="btn btn-primary">探索知识</a>
+    </div>
+</div>
+{% endblock %}
